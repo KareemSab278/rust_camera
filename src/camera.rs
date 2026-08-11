@@ -79,8 +79,7 @@ pub fn list_cameras() -> Result<Vec<String>, io::Error> {
         }
     }
 
-
-    Ok(cameras)
+    Ok(cameras.iter().filter(|c| c.contains("USB")).cloned().collect::<Vec<_>>())
 }
 
 
