@@ -9,7 +9,8 @@ use std::sync::Mutex;
 const RECORDINGS_DIR: &str = "Videos/Recordings";
 
 
-static RECORDING_PROCESS: Mutex<Option<(Child, ChildStdin)>> = Mutex::new(None);
+static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::new());
+
 
 
 
@@ -40,7 +41,10 @@ pub fn list_cameras() -> Result<Vec<String>, io::Error> {
         .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .output()
         .map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Failed to run FFmpeg: {}", e))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to run FFmpeg: {}", e),
+            )
         })?;
 
 
@@ -82,33 +86,39 @@ pub fn list_cameras() -> Result<Vec<String>, io::Error> {
 
 
 
-pub fn start_camera(camera: u8) -> Result<(), io::Error> {
+pub fn start_recording(cameras: &[u8]) -> Result<(), io::Error> {
     fs::create_dir_all(RECORDINGS_DIR)?;
 
 
-    // If a camera is already recording, stop it and save that recording
-    // before starting the new recording.
-    if let Some((mut process, mut stdin)) = RECORDING_PROCESS.lock().unwrap().take() {
-        stdin.write_all(b"q\n")?;
-        stdin.flush()?;
+    // Stop any existing recordings first.
+    stop_recording()?;
 
-        process.wait()?;
+
+    for camera in cameras {
+        // Use the local date/time at the exact moment this camera starts.
+        let timestamp = Local::now().format("%d-%m-%Y-%H-%M-%S");
+
+
+        // Include the camera number so multiple cameras don't
+        // try to write to the same file.
+        let filename = format!(
+            "{}-camera-{}.mp4",
+            timestamp,
+            camera + 1
+        );
+
+
+        let output = Path::new(RECORDINGS_DIR).join(filename);
+
+
+        let recording = start_ffmpeg(*camera, &output)?;
+
+
+        RECORDING_PROCESSES
+            .lock()
+            .unwrap()
+            .push(recording);
     }
-
-
-    // Use the local date/time at the exact moment recording starts.
-    let filename = format!(
-        "{}.mp4",
-        Local::now().format("%d-%m-%Y-%H-%M-%S")
-    );
-
-    let output = Path::new(RECORDINGS_DIR).join(filename);
-
-
-    let (process, stdin) = start_ffmpeg(camera, &output)?;
-
-
-    *RECORDING_PROCESS.lock().unwrap() = Some((process, stdin));
 
 
     Ok(())
@@ -118,7 +128,10 @@ pub fn start_camera(camera: u8) -> Result<(), io::Error> {
 
 
 #[cfg(target_os = "linux")]
-fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Error> {
+fn start_ffmpeg(
+    camera: u8,
+    output: &Path,
+) -> Result<(Child, ChildStdin), io::Error> {
     let device = format!("/dev/video{}", camera);
 
 
@@ -137,7 +150,12 @@ fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Er
     let stdin = process
         .stdin
         .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to access FFmpeg stdin"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to access FFmpeg stdin",
+            )
+        })?;
 
 
     Ok((process, stdin))
@@ -147,7 +165,10 @@ fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Er
 
 
 #[cfg(target_os = "macos")]
-fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Error> {
+fn start_ffmpeg(
+    camera: u8,
+    output: &Path,
+) -> Result<(Child, ChildStdin), io::Error> {
     let device = format!("{}:none", camera);
 
 
@@ -166,7 +187,12 @@ fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Er
     let stdin = process
         .stdin
         .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to access FFmpeg stdin"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to access FFmpeg stdin",
+            )
+        })?;
 
 
     Ok((process, stdin))
@@ -175,17 +201,22 @@ fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Er
 
 
 
-pub fn stop_camera() -> Result<(), io::Error> {
-    let mut recording = RECORDING_PROCESS.lock().unwrap();
+pub fn stop_recording() -> Result<(), io::Error> {
+    let mut recordings = RECORDING_PROCESSES
+        .lock()
+        .unwrap()
+        .drain(..)
+        .collect::<Vec<_>>();
 
 
-    if let Some((mut process, mut stdin)) = recording.take() {
-        // Tell FFmpeg to stop cleanly.
+    for (_, stdin) in &mut recordings {
         stdin.write_all(b"q\n")?;
         stdin.flush()?;
+    }
 
 
-        // Wait for FFmpeg to finish writing the MP4.
+    // Wait for every FFmpeg process to finish writing its MP4.
+    for (mut process, _) in recordings {
         process.wait()?;
     }
 
@@ -196,12 +227,16 @@ pub fn stop_camera() -> Result<(), io::Error> {
 
 
 
+
 pub fn delete_video(video_name: &str) -> Result<(), io::Error> {
     let path = Path::new(RECORDINGS_DIR).join(video_name);
 
 
     if !path.exists() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, "Video not found"));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Video not found",
+        ));
     }
 
 
@@ -222,7 +257,13 @@ pub fn list_recordings() -> Vec<String> {
 
 
     entries
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter_map(|entry| {
+            entry
+                .ok()?
+                .file_name()
+                .into_string()
+                .ok()
+        })
         .filter(|name| name.ends_with(".mp4"))
         .collect()
 }
@@ -231,7 +272,10 @@ pub fn list_recordings() -> Vec<String> {
 
 
 #[cfg(target_os = "linux")]
-fn generate_ffmpeg_command(device: &str, output: &Path) -> Vec<String> {
+fn generate_ffmpeg_command(
+    device: &str,
+    output: &Path,
+) -> Vec<String> {
     vec![
         "-f".into(),
         "v4l2".into(),
@@ -256,8 +300,13 @@ fn generate_ffmpeg_command(device: &str, output: &Path) -> Vec<String> {
 }
 
 
+
+
 #[cfg(target_os = "macos")]
-fn generate_ffmpeg_command(device: &str, output: &Path) -> Vec<String> {
+fn generate_ffmpeg_command(
+    device: &str,
+    output: &Path,
+) -> Vec<String> {
     vec![
         "-f".into(),
         "avfoundation".into(),
