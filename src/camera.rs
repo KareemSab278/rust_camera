@@ -89,18 +89,12 @@ pub fn list_cameras() -> Result<Vec<String>, io::Error> {
 pub fn start_recording(cameras: &[u8]) -> Result<(), io::Error> {
     fs::create_dir_all(RECORDINGS_DIR)?;
 
-
-    // Stop any existing recordings first.
     stop_recording()?;
 
-
     for camera in cameras {
-        // Use the local date/time at the exact moment this camera starts.
         let timestamp = Local::now().format("%d-%m-%Y-%H-%M-%S");
 
 
-        // Include the camera number so multiple cameras don't
-        // try to write to the same file.
         let filename = format!(
             "{}-camera-{}.mp4",
             timestamp,
@@ -215,7 +209,6 @@ pub fn stop_recording() -> Result<(), io::Error> {
     }
 
 
-    // Wait for every FFmpeg process to finish writing its MP4.
     for (mut process, _) in recordings {
         process.wait()?;
     }
@@ -223,8 +216,6 @@ pub fn stop_recording() -> Result<(), io::Error> {
 
     Ok(())
 }
-
-
 
 
 
