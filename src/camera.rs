@@ -1,28 +1,91 @@
 use chrono::Local;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Error, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
 
+const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 60;
 const RECORDINGS_DIR: &str = "Videos/Recordings";
-
 static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::new());
 
-// #[cfg(target_os = "linux")]
-// pub fn list_cameras() -> Result<Vec<String>, io::Error> {
-//     let mut cameras = Vec::new();
+// ===============================
+// MAIN FUCNCTION
+// ===============================
 
-//     for i in 0..4 {
-//         let device = format!("/dev/video{}", i);
+pub fn camera_process() -> Result<(), Error> {
+    let cameras = list_cameras()?;
 
-//         if Path::new(&device).exists() {
-//             cameras.push(device);
-//         }
-//     }
+    if cameras.is_empty() {
+        println!("No cameras found.");
+        return Ok(());
+    }
 
-//     Ok(cameras)
-// }
+    println!("Available cameras:");
+
+    for (index, camera) in cameras.iter().enumerate() {
+        println!("{}: {}", index + 1, camera);
+    }
+
+    println!();
+    println!("Select cameras (e.g. 1,2,3) or 'a' for all:");
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    let selected_cameras: Vec<String> = if input.trim().eq_ignore_ascii_case("a") {
+        cameras.clone()
+    } else {
+        input
+            .trim()
+            .split(',')
+            .map(|value| {
+                value.trim().parse::<usize>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Please enter camera numbers separated by commas",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|selection| {
+                if selection == 0 || selection > cameras.len() {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Invalid camera selection",
+                    ))
+                } else {
+                    Ok(cameras[selection - 1].clone())
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    if selected_cameras.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "No cameras selected",
+        ));
+    }
+
+    start_recording(&selected_cameras, MAX_RECORDING_TIMEOUT_SECONDS)?;
+
+    println!();
+    println!("Recording started.");
+    println!("Cameras: {:?}", selected_cameras);
+    println!("Press Enter to stop recording.");
+    println!("Maximum recording time: {} seconds.", MAX_RECORDING_TIMEOUT_SECONDS);
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    stop_recording()?;
+
+    println!("Recording stopped.");
+
+    Ok(())
+}
 
 #[cfg(target_os = "linux")]
 pub fn list_cameras() -> Result<Vec<String>, io::Error> {
@@ -98,27 +161,29 @@ pub fn list_cameras() -> Result<Vec<String>, io::Error> {
         .collect::<Vec<_>>())
 }
 
+pub fn start_recording(cameras: &[String], timeout: u8) -> Result<(), io::Error> {
+    if timeout < 1 || timeout > 120 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Timeout must be between 1 and 120 seconds",
+        ));
+    }
 
-pub fn start_recording(cameras: &[String], timeout: u32) -> Result<(), io::Error> {
-        fs::create_dir_all(RECORDINGS_DIR)?;
+    fs::create_dir_all(RECORDINGS_DIR)?;
 
     stop_recording()?;
 
     for (index, device) in cameras.iter().enumerate() {
-    let timestamp = Local::now().format("%d-%m-%Y-%H-%M-%S");
+        let timestamp = Local::now().format("%d-%m-%Y-%H-%M-%S");
 
-    let filename = format!(
-        "{}-camera-{}.mp4",
-        timestamp,
-        index + 1
-    );
+        let filename = format!("{}-camera-{}.mp4", timestamp, index + 1);
 
-    let output = Path::new(RECORDINGS_DIR).join(filename);
+        let output = Path::new(RECORDINGS_DIR).join(filename);
 
-    let recording = start_ffmpeg(device, &output, timeout)?;
+        let recording = start_ffmpeg(device, &output, timeout)?;
 
-    RECORDING_PROCESSES.lock().unwrap().push(recording);
-}
+        RECORDING_PROCESSES.lock().unwrap().push(recording);
+    }
 
     Ok(())
 }
@@ -127,7 +192,7 @@ pub fn start_recording(cameras: &[String], timeout: u32) -> Result<(), io::Error
 fn start_ffmpeg(
     device: &str,
     output: &Path,
-    timeout: u32,
+    timeout: u8,
 ) -> Result<(Child, ChildStdin), io::Error> {
     let mut process = Command::new("ffmpeg")
         .args(generate_ffmpeg_command(device, output, timeout))
@@ -143,12 +208,7 @@ fn start_ffmpeg(
     let stdin = process
         .stdin
         .take()
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to access FFmpeg stdin",
-            )
-        })?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to access FFmpeg stdin"))?;
 
     Ok((process, stdin))
 }
@@ -157,7 +217,7 @@ fn start_ffmpeg(
 fn start_ffmpeg(
     device: &str,
     output: &Path,
-    timeout: u32,
+    timeout: u8,
 ) -> Result<(Child, ChildStdin), io::Error> {
     let device = format!("{}:none", device);
 
@@ -175,12 +235,7 @@ fn start_ffmpeg(
     let stdin = process
         .stdin
         .take()
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to access FFmpeg stdin",
-            )
-        })?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to access FFmpeg stdin"))?;
 
     Ok((process, stdin))
 }
@@ -238,40 +293,28 @@ pub fn list_recordings() -> Vec<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn generate_ffmpeg_command(
-    device: &str,
-    output: &Path,
-    timeout: u32,
-) -> Vec<String> {
+fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<String> {
     vec![
         "-f".into(),
         "v4l2".into(),
-
         "-i".into(),
         device.into(),
-
         "-c:v".into(),
         "libx264".into(),
-
         "-preset".into(),
         "ultrafast".into(),
-
         "-crf".into(),
         "32".into(),
-
         "-an".into(),
-
         "-y".into(),
-
         "-t".into(),
         timeout.to_string().into(),
-
         output.to_string_lossy().into_owned(),
     ]
 }
 
 #[cfg(target_os = "macos")]
-fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u32) -> Vec<String> {
+fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<String> {
     vec![
         "-f".into(),
         "avfoundation".into(),
