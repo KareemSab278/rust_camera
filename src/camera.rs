@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
 
-const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 60;
+const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 30;
 const RECORDINGS_DIR: &str = "Videos/Recordings";
 static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::new());
 
@@ -14,9 +14,12 @@ static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::ne
 // ===============================
 
 pub fn camera_process(set_timeout: u8) -> Result<(), Error> {
+    let timeout = if set_timeout == 0 || set_timeout > MAX_RECORDING_TIMEOUT_SECONDS {
+        MAX_RECORDING_TIMEOUT_SECONDS
+    } else {
+        set_timeout
+    };
 
-    let timeout = if set_timeout == 0 { MAX_RECORDING_TIMEOUT_SECONDS } else { set_timeout };
-    
     let cameras = list_cameras()?;
 
     if cameras.is_empty() {
