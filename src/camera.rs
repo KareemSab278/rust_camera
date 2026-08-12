@@ -98,32 +98,39 @@ pub fn list_cameras() -> Result<Vec<String>, io::Error> {
         .collect::<Vec<_>>())
 }
 
-pub fn start_recording(cameras: &[u8], timeout: u32) -> Result<(), io::Error> {
-    fs::create_dir_all(RECORDINGS_DIR)?;
+
+pub fn start_recording(cameras: &[String], timeout: u32) -> Result<(), io::Error> {
+        fs::create_dir_all(RECORDINGS_DIR)?;
 
     stop_recording()?;
 
-    for camera in cameras {
-        let timestamp = Local::now().format("%d-%m-%Y-%H-%M-%S");
+    for (index, device) in cameras.iter().enumerate() {
+    let timestamp = Local::now().format("%d-%m-%Y-%H-%M-%S");
 
-        let filename = format!("{}-camera-{}.mp4", timestamp, camera + 1);
+    let filename = format!(
+        "{}-camera-{}.mp4",
+        timestamp,
+        index + 1
+    );
 
-        let output = Path::new(RECORDINGS_DIR).join(filename);
+    let output = Path::new(RECORDINGS_DIR).join(filename);
 
-        let recording = start_ffmpeg(*camera, &output, timeout)?;
+    let recording = start_ffmpeg(device, &output, timeout)?;
 
-        RECORDING_PROCESSES.lock().unwrap().push(recording);
-    }
+    RECORDING_PROCESSES.lock().unwrap().push(recording);
+}
 
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn start_ffmpeg(camera: u8, output: &Path, timeout: u32) -> Result<(Child, ChildStdin), io::Error> {
-    let device = format!("/dev/video{}", camera);
-
+fn start_ffmpeg(
+    device: &str,
+    output: &Path,
+    timeout: u32,
+) -> Result<(Child, ChildStdin), io::Error> {
     let mut process = Command::new("ffmpeg")
-        .args(generate_ffmpeg_command(&device, output, timeout))
+        .args(generate_ffmpeg_command(device, output, timeout))
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|e| {
@@ -136,14 +143,23 @@ fn start_ffmpeg(camera: u8, output: &Path, timeout: u32) -> Result<(Child, Child
     let stdin = process
         .stdin
         .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to access FFmpeg stdin"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to access FFmpeg stdin",
+            )
+        })?;
 
     Ok((process, stdin))
 }
 
 #[cfg(target_os = "macos")]
-fn start_ffmpeg(camera: u8, output: &Path, timeout: u32) -> Result<(Child, ChildStdin), io::Error> {
-    let device = format!("{}:none", camera);
+fn start_ffmpeg(
+    device: &str,
+    output: &Path,
+    timeout: u32,
+) -> Result<(Child, ChildStdin), io::Error> {
+    let device = format!("{}:none", device);
 
     let mut process = Command::new("ffmpeg")
         .args(generate_ffmpeg_command(&device, output, timeout))
@@ -159,7 +175,12 @@ fn start_ffmpeg(camera: u8, output: &Path, timeout: u32) -> Result<(Child, Child
     let stdin = process
         .stdin
         .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to access FFmpeg stdin"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to access FFmpeg stdin",
+            )
+        })?;
 
     Ok((process, stdin))
 }

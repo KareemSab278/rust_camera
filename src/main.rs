@@ -1,6 +1,7 @@
 mod camera;
 
 use std::io;
+use std::io::Write;
 
 fn main() -> Result<(), io::Error> {
     let cameras = camera::list_cameras()?;
@@ -22,9 +23,9 @@ fn main() -> Result<(), io::Error> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
 
-    let selected_cameras: Vec<u8> =
+    let selected_cameras: Vec<String> =
         if input.trim().eq_ignore_ascii_case("a") {
-            (0..cameras.len()).map(|i| i as u8).collect()
+            cameras.clone()
         } else {
             input
                 .trim()
@@ -46,7 +47,7 @@ fn main() -> Result<(), io::Error> {
                             "Invalid camera selection",
                         ))
                     } else {
-                        Ok((selection - 1) as u8)
+                        Ok(cameras[selection - 1].clone())
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?
