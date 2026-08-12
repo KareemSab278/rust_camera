@@ -13,7 +13,10 @@ static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::ne
 // MAIN FUCNCTION
 // ===============================
 
-pub fn camera_process() -> Result<(), Error> {
+pub fn camera_process(set_timeout: u8) -> Result<(), Error> {
+
+    let timeout = if set_timeout == 0 { MAX_RECORDING_TIMEOUT_SECONDS } else { set_timeout };
+    
     let cameras = list_cameras()?;
 
     if cameras.is_empty() {
@@ -69,13 +72,13 @@ pub fn camera_process() -> Result<(), Error> {
         ));
     }
 
-    start_recording(&selected_cameras, MAX_RECORDING_TIMEOUT_SECONDS)?;
+    start_recording(&selected_cameras, timeout)?;
 
     println!();
     println!("Recording started.");
     println!("Cameras: {:?}", selected_cameras);
     println!("Press Enter to stop recording.");
-    println!("Maximum recording time: {} seconds.", MAX_RECORDING_TIMEOUT_SECONDS);
+    println!("Maximum recording time: {} seconds.", timeout);
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -297,14 +300,16 @@ fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<Stri
     vec![
         "-f".into(),
         "v4l2".into(),
+        "-framerate".into(),
+        "10".into(),
+        "-video_size".into(),
+        "640x480".into(),
         "-i".into(),
         device.into(),
         "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "ultrafast".into(),
-        "-crf".into(),
-        "32".into(),
+        "h264_v4l2m2m".into(),
+        "-b:v".into(),
+        "2M".into(),
         "-an".into(),
         "-y".into(),
         "-t".into(),
@@ -312,6 +317,28 @@ fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<Stri
         output.to_string_lossy().into_owned(),
     ]
 }
+
+// Previous CPU-heavy software encode command (keep commented for easy revert):
+// #[cfg(target_os = "linux")]
+// fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<String> {
+//     vec![
+//         "-f".into(),
+//         "v4l2".into(),
+//         "-i".into(),
+//         device.into(),
+//         "-c:v".into(),
+//         "libx264".into(),
+//         "-preset".into(),
+//         "ultrafast".into(),
+//         "-crf".into(),
+//         "32".into(),
+//         "-an".into(),
+//         "-y".into(),
+//         "-t".into(),
+//         timeout.to_string().into(),
+//         output.to_string_lossy().into_owned(),
+//     ]
+// }
 
 #[cfg(target_os = "macos")]
 fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<String> {
@@ -327,11 +354,9 @@ fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<Stri
         "-vf".into(),
         "fps=30".into(),
         "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "ultrafast".into(),
-        "-crf".into(),
-        "32".into(),
+        "h264_videotoolbox".into(),
+        "-b:v".into(),
+        "2500k".into(),
         "-an".into(),
         "-y".into(),
         "-t".into(),
@@ -339,3 +364,31 @@ fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<Stri
         output.to_string_lossy().into_owned(),
     ]
 }
+
+// Previous CPU-heavy software encode command (keep commented for easy revert):
+// #[cfg(target_os = "macos")]
+// fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<String> {
+//     vec![
+//         "-f".into(),
+//         "avfoundation".into(),
+//         "-video_size".into(),
+//         "640x480".into(),
+//         "-framerate".into(),
+//         "30".into(),
+//         "-i".into(),
+//         device.into(),
+//         "-vf".into(),
+//         "fps=30".into(),
+//         "-c:v".into(),
+//         "libx264".into(),
+//         "-preset".into(),
+//         "ultrafast".into(),
+//         "-crf".into(),
+//         "32".into(),
+//         "-an".into(),
+//         "-y".into(),
+//         "-t".into(),
+//         timeout.to_string().into(),
+//         output.to_string_lossy().into_owned(),
+//     ]
+// }
