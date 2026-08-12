@@ -257,6 +257,8 @@ fn start_ffmpeg(
     let mut process = Command::new("ffmpeg")
         .args(generate_ffmpeg_command(device, output, timeout))
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| {
             io::Error::new(
@@ -284,6 +286,8 @@ fn start_ffmpeg(
     let mut process = Command::new("ffmpeg")
         .args(generate_ffmpeg_command(&device, output, timeout))
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| {
             io::Error::new(
