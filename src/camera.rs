@@ -3,11 +3,19 @@ use std::fs;
 use std::io::{self, Error, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
 
 const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 30;
 const RECORDINGS_DIR: &str = "Videos/Recordings";
-static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::new());
+
+struct CameraRecorder {
+    device: String,
+    process: Child,
+    stdin: ChildStdin,
+    is_recording: Arc<AtomicBool>,
+}
+
+static RECORDING_PROCESSES: Mutex<Vec<Option<CameraRecorder>>> = Mutex::new(Vec::new());
 
 // commit 2093a713b5aade52e543fdd1596c1d0c747a2b06 is most stable version of repo
 // ===============================
@@ -81,15 +89,52 @@ pub fn camera_process(set_timeout: u8) -> Result<(), Error> {
     println!();
     println!("Recording started.");
     println!("Cameras: {:?}", selected_cameras);
-    println!("Press Enter to stop recording.");
     println!("Maximum recording time: {} seconds.", timeout);
+    println!("Commands:");
+    println!("  stop <n>      - stop camera number n");
+    println!("  stop <n,m>    - stop multiple cameras");
+    println!("  status        - show active recordings");
+    println!("  all / exit    - stop all recordings and quit");
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    loop {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let command = input.trim();
 
-    stop_recording()?;
+        if command.is_empty() {
+            continue;
+        }
 
-    println!("Recording stopped.");
+        if command.eq_ignore_ascii_case("all")
+            || command.eq_ignore_ascii_case("exit")
+            || command.eq_ignore_ascii_case("quit")
+        {
+            stop_recording()?;
+            println!("All recordings stopped.");
+            break;
+        }
+
+        if command.eq_ignore_ascii_case("status") {
+            print_recording_status();
+            continue;
+        }
+
+        if let Some(indices) = parse_stop_command(command) {
+            stop_recording_selected(&indices)?;
+            if RECORDING_PROCESSES
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|entry| entry.is_none())
+            {
+                println!("All selected cameras have stopped.");
+                break;
+            }
+            continue;
+        }
+
+        println!("Unknown command. Use stop <n>, status, all, or exit.");
+    }
 
     Ok(())
 }
@@ -187,9 +232,17 @@ pub fn start_recording(cameras: &[String], timeout: u8) -> Result<(), io::Error>
 
         let output = Path::new(RECORDINGS_DIR).join(filename);
 
-        let recording = start_ffmpeg(device, &output, timeout)?;
+        let (process, stdin) = start_ffmpeg(device, &output, timeout)?;
+        let is_recording = Arc::new(AtomicBool::new(true));
 
-        RECORDING_PROCESSES.lock().unwrap().push(recording);
+        let recorder = CameraRecorder {
+            device: device.clone(),
+            process,
+            stdin,
+            is_recording,
+        };
+
+        RECORDING_PROCESSES.lock().unwrap().push(Some(recorder));
     }
 
     Ok(())
@@ -248,31 +301,80 @@ fn start_ffmpeg(
 }
 
 pub fn stop_recording() -> Result<(), io::Error> {
-    let mut recordings = RECORDING_PROCESSES
-        .lock()
-        .unwrap()
-        .drain(..)
+    let mut recordings = RECORDING_PROCESSES.lock().unwrap();
+    let processes = recordings
+        .iter_mut()
+        .filter_map(|entry| entry.take())
         .collect::<Vec<_>>();
 
-    // for (_, stdin) in &mut recordings {
-    //     stdin.write_all(b"q\n")?;
-    //     stdin.flush()?;
-    // }
+    drop(recordings);
 
-    for (_, stdin) in &mut recordings {
-        let _ = stdin.write_all(b"q\n");
-        let _ = stdin.flush();
-    }
-
-    // for (mut process, _) in recordings {
-    //     process.wait()?;
-    // }
-
-    for (mut process, _) in recordings {
-        let _ = process.wait();
+    for mut recorder in processes {
+        recorder.is_recording.store(false, Ordering::Release);
+        let _ = recorder.stdin.write_all(b"q\n");
+        let _ = recorder.stdin.flush();
+        let _ = recorder.process.wait();
     }
 
     Ok(())
+}
+
+pub fn stop_recording_camera(camera_number: usize) -> Result<(), io::Error> {
+    let mut recordings = RECORDING_PROCESSES.lock().unwrap();
+    let mut recorder = recordings
+        .get_mut(camera_number)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid camera number"))?
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Camera is not recording"))?;
+
+    recorder.is_recording.store(false, Ordering::Release);
+    let _ = recorder.stdin.write_all(b"q\n");
+    let _ = recorder.stdin.flush();
+    let _ = recorder.process.wait();
+
+    Ok(())
+}
+
+pub fn stop_recording_selected(camera_numbers: &[usize]) -> Result<(), io::Error> {
+    for &camera_number in camera_numbers {
+        if let Err(err) = stop_recording_camera(camera_number.saturating_sub(1)) {
+            eprintln!("Failed to stop camera {}: {}", camera_number, err);
+        }
+    }
+    Ok(())
+}
+
+fn parse_stop_command(command: &str) -> Option<Vec<usize>> {
+    let lower = command.to_lowercase();
+    let rest = if let Some(rest) = lower.strip_prefix("stop ") {
+        rest
+    } else if let Some(rest) = lower.strip_prefix("kill ") {
+        rest
+    } else {
+        return None;
+    };
+
+    let indices = rest
+        .split(',')
+        .map(|part| part.trim().parse::<usize>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+
+    if indices.is_empty() {
+        return None;
+    }
+
+    Some(indices)
+}
+
+fn print_recording_status() {
+    let recordings = RECORDING_PROCESSES.lock().unwrap();
+    for (index, entry) in recordings.iter().enumerate() {
+        match entry {
+            Some(recorder) => println!("Camera {} ({}) recording: {}", index + 1, recorder.device, recorder.is_recording.load(Ordering::Acquire)),
+            None => println!("Camera {} stopped", index + 1),
+        }
+    }
 }
 
 pub fn delete_video(video_name: &str) -> Result<(), io::Error> {
