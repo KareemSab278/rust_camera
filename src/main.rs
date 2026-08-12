@@ -59,7 +59,7 @@ fn main() -> Result<(), io::Error> {
         ));
     }
 
-    camera::start_recording(&selected_cameras)?;
+    camera::start_recording(&selected_cameras, 6)?;
 
     println!();
     println!("Recording started.");

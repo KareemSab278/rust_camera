@@ -98,7 +98,7 @@ pub fn list_cameras() -> Result<Vec<String>, io::Error> {
         .collect::<Vec<_>>())
 }
 
-pub fn start_recording(cameras: &[u8]) -> Result<(), io::Error> {
+pub fn start_recording(cameras: &[u8], timeout: u32) -> Result<(), io::Error> {
     fs::create_dir_all(RECORDINGS_DIR)?;
 
     stop_recording()?;
@@ -110,7 +110,7 @@ pub fn start_recording(cameras: &[u8]) -> Result<(), io::Error> {
 
         let output = Path::new(RECORDINGS_DIR).join(filename);
 
-        let recording = start_ffmpeg(*camera, &output)?;
+        let recording = start_ffmpeg(*camera, &output, timeout)?;
 
         RECORDING_PROCESSES.lock().unwrap().push(recording);
     }
@@ -119,11 +119,11 @@ pub fn start_recording(cameras: &[u8]) -> Result<(), io::Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Error> {
+fn start_ffmpeg(camera: u8, output: &Path, timeout: u32) -> Result<(Child, ChildStdin), io::Error> {
     let device = format!("/dev/video{}", camera);
 
     let mut process = Command::new("ffmpeg")
-        .args(generate_ffmpeg_command(&device, output, 2))
+        .args(generate_ffmpeg_command(&device, output, timeout))
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|e| {
@@ -142,11 +142,11 @@ fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Er
 }
 
 #[cfg(target_os = "macos")]
-fn start_ffmpeg(camera: u8, output: &Path) -> Result<(Child, ChildStdin), io::Error> {
+fn start_ffmpeg(camera: u8, output: &Path, timeout: u32) -> Result<(Child, ChildStdin), io::Error> {
     let device = format!("{}:none", camera);
 
     let mut process = Command::new("ffmpeg")
-        .args(generate_ffmpeg_command(&device, output, 2))
+        .args(generate_ffmpeg_command(&device, output, timeout))
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|e| {
@@ -217,34 +217,40 @@ pub fn list_recordings() -> Vec<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn generate_ffmpeg_command(device: &str, output: &Path, time_limit: u32) -> Vec<String> {
+fn generate_ffmpeg_command(
+    device: &str,
+    output: &Path,
+    timeout: u32,
+) -> Vec<String> {
     vec![
         "-f".into(),
         "v4l2".into(),
-        "-video_size".into(),
-        "640x480".into(),
-        "-framerate".into(),
-        "30".into(),
+
         "-i".into(),
         device.into(),
-        "-vf".into(),
-        "fps=10,format=gray".into(),
+
         "-c:v".into(),
         "libx264".into(),
+
         "-preset".into(),
         "ultrafast".into(),
+
         "-crf".into(),
         "32".into(),
+
         "-an".into(),
+
         "-y".into(),
+
         "-t".into(),
-        time_limit.to_string().into(),
+        timeout.to_string().into(),
+
         output.to_string_lossy().into_owned(),
     ]
 }
 
 #[cfg(target_os = "macos")]
-fn generate_ffmpeg_command(device: &str, output: &Path, time_limit: u32) -> Vec<String> {
+fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u32) -> Vec<String> {
     vec![
         "-f".into(),
         "avfoundation".into(),
@@ -265,7 +271,7 @@ fn generate_ffmpeg_command(device: &str, output: &Path, time_limit: u32) -> Vec<
         "-an".into(),
         "-y".into(),
         "-t".into(),
-        time_limit.to_string().into(),
+        timeout.to_string().into(),
         output.to_string_lossy().into_owned(),
     ]
 }
