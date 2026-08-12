@@ -9,14 +9,46 @@ const RECORDINGS_DIR: &str = "Videos/Recordings";
 
 static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::new());
 
+// #[cfg(target_os = "linux")]
+// pub fn list_cameras() -> Result<Vec<String>, io::Error> {
+//     let mut cameras = Vec::new();
+
+//     for i in 0..4 {
+//         let device = format!("/dev/video{}", i);
+
+//         if Path::new(&device).exists() {
+//             cameras.push(device);
+//         }
+//     }
+
+//     Ok(cameras)
+// }
+
 #[cfg(target_os = "linux")]
 pub fn list_cameras() -> Result<Vec<String>, io::Error> {
     let mut cameras = Vec::new();
 
-    for i in 0..4 {
+    for i in 0..32 {
         let device = format!("/dev/video{}", i);
 
-        if Path::new(&device).exists() {
+        if !Path::new(&device).exists() {
+            continue;
+        }
+
+        let output = Command::new("v4l2-ctl")
+            .args(["-d", &device, "--all"])
+            .output();
+
+        let output = match output {
+            Ok(output) if output.status.success() => output,
+            _ => continue,
+        };
+
+        let text = String::from_utf8_lossy(&output.stdout);
+
+        if text.contains("Driver name      : uvcvideo")
+            && text.contains("Capabilities     : timeperframe")
+        {
             cameras.push(device);
         }
     }
