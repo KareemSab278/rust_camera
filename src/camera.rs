@@ -9,6 +9,7 @@ const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 30;
 const RECORDINGS_DIR: &str = "Videos/Recordings";
 static RECORDING_PROCESSES: Mutex<Vec<(Child, ChildStdin)>> = Mutex::new(Vec::new());
 
+// commit 2093a713b5aade52e543fdd1596c1d0c747a2b06 is most stable version of repo
 // ===============================
 // MAIN FUCNCTION
 // ===============================
