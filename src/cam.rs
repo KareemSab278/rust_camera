@@ -181,6 +181,7 @@ pub fn list_recordings() -> Result<Vec<String>, io::Error> {
     the camera outputs MJPEG frams and also at 30fps and also 1280x720 and 640x480 res
     ffmpeg will do less processing if we keep it the same
 */
+
 fn generate_ffmpeg_command(device: &str, output: &Path) -> Vec<String> {
     vec![
         "-f".into(),
@@ -193,10 +194,15 @@ fn generate_ffmpeg_command(device: &str, output: &Path) -> Vec<String> {
         "640x480".into(),
         "-i".into(),
         device.into(),
+
+        "-vf".into(),
+        "format=yuv420p".into(),
+
         "-c:v".into(),
         "h264_v4l2m2m".into(),
         "-b:v".into(),
         "2M".into(),
+
         "-an".into(),
         "-y".into(),
         output.to_string_lossy().into_owned(),
