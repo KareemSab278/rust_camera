@@ -68,25 +68,32 @@ pub fn is_recording() -> bool {
     recording.is_some()
 }
 
-fn clamp_timeout(timeout: u8) -> u8 {
-    if timeout == 0 || timeout > MAX_RECORDING_TIMEOUT_SECONDS {
-        MAX_RECORDING_TIMEOUT_SECONDS
+fn clamp_timeout(timeout: u8) -> Option<u8> {
+    if timeout == 0 {
+        None
     } else {
-        timeout
+        Some(timeout.min(MAX_RECORDING_TIMEOUT_SECONDS))
     }
 }
 
-fn run_recording(mut process: Child, timeout: u8, stop_receiver: mpsc::Receiver<()>) {
-    match stop_receiver.recv_timeout(Duration::from_secs(timeout as u64)) {
-        Ok(()) => {
-            let _ = stop_ffmpeg(&mut process);
-        }
+fn run_recording(mut process: Child, timeout: Option<u8>, stop_receiver: mpsc::Receiver<()>) {
+    match timeout {
+        Some(seconds) => match stop_receiver.recv_timeout(Duration::from_secs(seconds as u64)) {
+            Ok(()) => {
+                let _ = stop_ffmpeg(&mut process);
+            }
 
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = stop_ffmpeg(&mut process);
-        }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = stop_ffmpeg(&mut process);
+            }
 
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = stop_ffmpeg(&mut process);
+            }
+        },
+
+        None => {
+            let _ = stop_receiver.recv();
             let _ = stop_ffmpeg(&mut process);
         }
     }
