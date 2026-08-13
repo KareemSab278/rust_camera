@@ -1,6 +1,6 @@
 use chrono::Local;
 use std::fs;
-use std::io::{self, Error, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
@@ -62,10 +62,13 @@ pub fn start_recording(camera: &str, timeout: u8) -> Result<PathBuf, io::Error> 
     Ok(output)
 }
 
+
+#[allow(dead_code)]
 pub fn is_recording() -> bool {
     let recording = RECORDING_STOP.lock().unwrap();
     recording.is_some()
 }
+
 
 fn clamp_timeout(timeout: u8) -> u8 {
     if timeout == 0 || timeout > MAX_RECORDING_TIMEOUT_SECONDS {
@@ -149,6 +152,7 @@ pub fn stop_recording() -> Result<(), io::Error> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn delete_video(video_name: &str) -> Result<(), io::Error> {
     let path = Path::new(RECORDINGS_DIR).join(video_name);
 
@@ -161,16 +165,23 @@ pub fn delete_video(video_name: &str) -> Result<(), io::Error> {
     Ok(())
 }
 
-pub fn list_recordings() -> Vec<String> {
+pub fn list_recordings() -> Result<Vec<String>, io::Error> {
     let entries = match fs::read_dir(RECORDINGS_DIR) {
         Ok(entries) => entries,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to read recordings directory",
+            ));
+        }
     };
 
-    entries
+    let recordings = entries
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
         .filter(|name| name.ends_with(".mp4"))
-        .collect()
+        .collect();
+
+    Ok(recordings)
 }
 
 /*
