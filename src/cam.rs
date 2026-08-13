@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
     Mutex,
-    mpsc::{self, TryRecvError},
+    mpsc::{self},
 };
 use std::thread;
 use std::time::Duration;
@@ -62,13 +62,11 @@ pub fn start_recording(camera: &str, timeout: u8) -> Result<PathBuf, io::Error> 
     Ok(output)
 }
 
-
 #[allow(dead_code)]
 pub fn is_recording() -> bool {
     let recording = RECORDING_STOP.lock().unwrap();
     recording.is_some()
 }
-
 
 fn clamp_timeout(timeout: u8) -> u8 {
     if timeout == 0 || timeout > MAX_RECORDING_TIMEOUT_SECONDS {
@@ -79,40 +77,33 @@ fn clamp_timeout(timeout: u8) -> u8 {
 }
 
 fn run_recording(mut process: Child, timeout: u8, stop_receiver: mpsc::Receiver<()>) {
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_secs(timeout as u64);
-
-    loop {
-        match process.try_wait() {
-            Ok(Some(_)) => {
-                break;
-            }
-            Ok(None) => {}
-            Err(_) => {
-                break;
-            }
-        }
-
-        if start.elapsed() >= timeout {
+    match stop_receiver.recv_timeout(Duration::from_secs(timeout as u64)) {
+        Ok(()) => {
             let _ = stop_ffmpeg(&mut process);
-            break;
         }
 
-        match stop_receiver.try_recv() {
-            Ok(()) => {
-                let _ = stop_ffmpeg(&mut process);
-                break;
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                break;
-            }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = stop_ffmpeg(&mut process);
         }
 
-        thread::sleep(Duration::from_millis(100));
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = stop_ffmpeg(&mut process);
+        }
     }
 
-    let _ = process.wait();
+    match process.wait() {
+        Ok(status) if status.success() => {
+            println!("FFmpeg finished successfully");
+        }
+
+        Ok(status) => {
+            eprintln!("FFmpeg failed with status: {}", status);
+        }
+
+        Err(e) => {
+            eprintln!("Failed waiting for FFmpeg: {}", e);
+        }
+    }
 }
 
 fn stop_ffmpeg(process: &mut Child) -> Result<(), io::Error> {
@@ -128,8 +119,8 @@ fn start_ffmpeg(device: &str, output: &Path) -> Result<Child, io::Error> {
     Command::new("ffmpeg")
         .args(generate_ffmpeg_command(device, output))
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| {
             io::Error::new(
