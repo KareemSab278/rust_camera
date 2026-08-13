@@ -7,7 +7,9 @@
 */
 
 // 30 seconds - failed.
-// 20 seconds - 
+// 25 seconds - 
+// 20 seconds - pass.
+
 
 mod cam;
 
@@ -20,7 +22,7 @@ fn main() {
     // 0 = manual stop only; stop_recording() controls when recording ends.
     let _ = cam::start_recording(&found_cam, 0).expect("Failed to start recording");
 
-    std::thread::sleep(std::time::Duration::from_secs(20));
+    std::thread::sleep(std::time::Duration::from_secs(25));
     cam::stop_recording().expect("Failed to stop recording");
 
     let recordings = cam::list_recordings().expect("Failed to list recordings");
