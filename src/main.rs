@@ -16,7 +16,7 @@ fn main() {
 
     let _ = cam::start_recording(&found_cam, 5).expect("Failed to start recording");
 
-    std::thread::sleep(std::time::Duration::from_secs(6)); // door open for 6 seconds, then stop recording
+    std::thread::sleep(std::time::Duration::from_secs(29)); // door open for 6 seconds, then stop recording
     cam::stop_recording().expect("Failed to stop recording");
 
     let recordings = cam::list_recordings().expect("Failed to list recordings");

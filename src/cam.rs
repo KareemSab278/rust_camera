@@ -27,7 +27,7 @@ use std::time::Duration;
     im not worried about storage as well - 120 gb sd is enough memory since video will be sent and then deleted on success
 */
 
-const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 10;
+const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 30;
 const RECORDINGS_DIR: &str = "Videos/Recordings";
 
 static RECORDING_STOP: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
