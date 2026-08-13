@@ -119,8 +119,8 @@ fn start_ffmpeg(device: &str, output: &Path) -> Result<Child, io::Error> {
     Command::new("ffmpeg")
         .args(generate_ffmpeg_command(device, output))
         .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| {
             io::Error::new(
