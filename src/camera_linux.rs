@@ -1,152 +1,39 @@
 use chrono::Local;
 use std::fs;
 use std::io::{self, Error, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Mutex,
+    mpsc::{self, TryRecvError},
+};
+use std::thread;
+use std::time::Duration;
+
+/*
+    im gonna kiss here.
+    tauri should send the camera identifier to here but for now ill just search for the camera and use it. if no camera found then return error to frontend.
+    find all cameras - should be only 1 plugged in!
+    basically just record with the plugged in camera else return Err 'failed to init cam'
+    then stop recording after timeout or if stop_recording called.
+    control with 1 atomic bool. check if recording active or not in cam recording loop.
+    stop_recording fn switches the atomic bool and hands the video to ffmpeg to save to disk
+    ffmpeg runs on separate thread and is killed when ffmpeg process completes.
+    atomic bool then switched back to normal state and ready for next recording.
+
+    this ensure the camera is always ready for another video but the ffmpeg process stays running on separate threads.
+    ffmpeg is a fire and forget process that will save the video to disk and then exit. we dont need to wait for it to finish.
+    we must rely on ffmpeg to work correctly and save video to disk. if ffmpeg fails then im a shitty dev.
+    im not worried about storage as well - 120 gb sd is enough memory since video will be sent and then deleted on success
+*/
 
 const MAX_RECORDING_TIMEOUT_SECONDS: u8 = 10;
 const RECORDINGS_DIR: &str = "Videos/Recordings";
 
-struct CameraRecorder {
-    device: String,
-    process: Child,
-    stdin: ChildStdin,
-    is_recording: Arc<AtomicBool>,
-}
+static RECORDING_STOP: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
 
-static RECORDING_PROCESS: Mutex<Option<CameraRecorder>> = Mutex::new(None);
-
-// commit 2093a713b5aade52e543fdd1596c1d0c747a2b06 is most stable version of repo
-// ===============================
-// MAIN FUNCTION
-// ===============================
-
-pub fn camera_process(set_timeout: u8) -> Result<(), Error> {
-    let timeout = if set_timeout == 0 || set_timeout > MAX_RECORDING_TIMEOUT_SECONDS {
-        MAX_RECORDING_TIMEOUT_SECONDS
-    } else {
-        set_timeout
-    };
-
-    let cameras = list_cameras()?;
-
-    if cameras.is_empty() {
-        println!("No cameras found.");
-        return Ok(());
-    }
-
-    println!("Available cameras:");
-
-    for (index, camera) in cameras.iter().enumerate() {
-        println!("{}: {}", index + 1, camera);
-    }
-
-    println!();
-    println!("Select a camera by number:");
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    let selected_camera = input
-        .trim()
-        .parse::<usize>()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Please enter a camera number"))?;
-
-    if selected_camera == 0 || selected_camera > cameras.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Invalid camera selection",
-        ));
-    }
-
-    let selected_camera = cameras[selected_camera - 1].clone();
-
-    start_recording(&selected_camera, timeout)?;
-
-    println!();
-    println!("Recording started.");
-    println!("Camera: {}", selected_camera);
-    println!("Maximum recording time: {} seconds.", timeout);
-    println!("Commands:");
-    println!("  stop          - stop recording");
-    println!("  status        - show active recording status");
-    println!("  all / exit    - stop recording and quit");
-
-    loop {
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let command = input.trim();
-
-        if command.is_empty() {
-            continue;
-        }
-
-        if command.eq_ignore_ascii_case("all")
-            || command.eq_ignore_ascii_case("exit")
-            || command.eq_ignore_ascii_case("quit")
-        {
-            stop_recording()?;
-            println!("Recording stopped.");
-            break;
-        }
-
-        if command.eq_ignore_ascii_case("status") {
-            print_recording_status();
-            continue;
-        }
-
-        if command.eq_ignore_ascii_case("stop") {
-            stop_recording()?;
-            println!("Recording stopped.");
-            break;
-        }
-
-        println!("Unknown command. Use stop, status, all, or exit.");
-    }
-
-    Ok(())
-}
-
-
-pub fn list_cameras() -> Result<Vec<String>, io::Error> {
-    let mut cameras = Vec::new();
-
-    for i in 0..32 {
-        let device = format!("/dev/video{}", i);
-
-        if !Path::new(&device).exists() {
-            continue;
-        }
-
-        let output = Command::new("v4l2-ctl")
-            .args(["-d", &device, "--all"])
-            .output();
-
-        let output = match output {
-            Ok(output) if output.status.success() => output,
-            _ => continue,
-        };
-
-        let text = String::from_utf8_lossy(&output.stdout);
-
-        if text.contains("Driver name      : uvcvideo")
-            && text.contains("Capabilities     : timeperframe")
-        {
-            cameras.push(device);
-        }
-    }
-
-    Ok(cameras)
-}
-
-pub fn start_recording(camera: &String, timeout: u8) -> Result<(), io::Error> {
-    if timeout < 1 || timeout > 120 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Timeout must be between 1 and 120 seconds",
-        ));
-    }
+pub fn start_recording(camera: &str, timeout: u8) -> Result<PathBuf, io::Error> {
+    let duration = clamp_timeout(timeout);
 
     fs::create_dir_all(RECORDINGS_DIR)?;
 
@@ -156,28 +43,87 @@ pub fn start_recording(camera: &String, timeout: u8) -> Result<(), io::Error> {
     let filename = format!("{}-camera.mp4", timestamp);
     let output = Path::new(RECORDINGS_DIR).join(filename);
 
-    let (process, stdin) = start_ffmpeg(camera, &output, timeout)?;
-    let is_recording = Arc::new(AtomicBool::new(true));
+    let process = start_ffmpeg(camera, &output)?;
 
-    let recorder = CameraRecorder {
-        device: camera.clone(),
-        process,
-        stdin,
-        is_recording,
-    };
+    let (stop_sender, stop_receiver) = mpsc::channel();
 
-    *RECORDING_PROCESS.lock().unwrap() = Some(recorder);
+    {
+        let mut recording = RECORDING_STOP.lock().unwrap();
+        *recording = Some(stop_sender);
+    }
+
+    thread::spawn(move || {
+        run_recording(process, duration, stop_receiver);
+
+        let mut recording = RECORDING_STOP.lock().unwrap();
+        recording.take();
+    });
+
+    Ok(output)
+}
+
+pub fn is_recording() -> bool {
+    let recording = RECORDING_STOP.lock().unwrap();
+    recording.is_some()
+}
+
+fn clamp_timeout(timeout: u8) -> u8 {
+    if timeout == 0 || timeout > MAX_RECORDING_TIMEOUT_SECONDS {
+        MAX_RECORDING_TIMEOUT_SECONDS
+    } else {
+        timeout
+    }
+}
+
+fn run_recording(mut process: Child, timeout: u8, stop_receiver: mpsc::Receiver<()>) {
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(timeout as u64);
+
+    loop {
+        match process.try_wait() {
+            Ok(Some(_)) => {
+                break;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                break;
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = stop_ffmpeg(&mut process);
+            break;
+        }
+
+        match stop_receiver.try_recv() {
+            Ok(()) => {
+                let _ = stop_ffmpeg(&mut process);
+                break;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                break;
+            }
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = process.wait();
+}
+
+fn stop_ffmpeg(process: &mut Child) -> Result<(), io::Error> {
+    if let Some(mut stdin) = process.stdin.take() {
+        stdin.write_all(b"q\n")?;
+        stdin.flush()?;
+    }
 
     Ok(())
 }
 
-fn start_ffmpeg(
-    device: &str,
-    output: &Path,
-    timeout: u8,
-) -> Result<(Child, ChildStdin), io::Error> {
-    let mut process = Command::new("ffmpeg")
-        .args(generate_ffmpeg_command(device, output, timeout))
+fn start_ffmpeg(device: &str, output: &Path) -> Result<Child, io::Error> {
+    Command::new("ffmpeg")
+        .args(generate_ffmpeg_command(device, output))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -187,45 +133,20 @@ fn start_ffmpeg(
                 io::ErrorKind::Other,
                 format!("Failed to start FFmpeg: {}", e),
             )
-        })?;
-
-    let stdin = process
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to access FFmpeg stdin"))?;
-
-    Ok((process, stdin))
+        })
 }
 
-
 pub fn stop_recording() -> Result<(), io::Error> {
-    let mut recording = RECORDING_PROCESS.lock().unwrap();
-    let recorder = recording.take();
+    let stop_sender = {
+        let mut recording = RECORDING_STOP.lock().unwrap();
+        recording.take()
+    };
 
-    drop(recording);
-
-    if let Some(mut recorder) = recorder {
-        recorder.is_recording.store(false, Ordering::Release);
-        let _ = recorder.stdin.write_all(b"q\n");
-        let _ = recorder.stdin.flush();
-        let _ = recorder.process.wait();
+    if let Some(sender) = stop_sender {
+        let _ = sender.send(());
     }
 
     Ok(())
-}
-
-
-fn print_recording_status() {
-    let recording = RECORDING_PROCESS.lock().unwrap();
-
-    match recording.as_ref() {
-        Some(recorder) => println!(
-            "Camera ({}) recording: {}",
-            recorder.device,
-            recorder.is_recording.load(Ordering::Acquire)
-        ),
-        None => println!("No active recording."),
-    }
 }
 
 pub fn delete_video(video_name: &str) -> Result<(), io::Error> {
@@ -252,12 +173,20 @@ pub fn list_recordings() -> Vec<String> {
         .collect()
 }
 
-fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<String> {
+/*
+    MJPEG camera -> H.264 hardware encoder -> MP4
+    this is the most efficient processing for the camera to record and save to disk
+    the camera outputs MJPEG frams and also at 30fps and also 1280x720 and 640x480 res
+    ffmpeg will do less processing if we keep it the same
+*/
+fn generate_ffmpeg_command(device: &str, output: &Path) -> Vec<String> {
     vec![
         "-f".into(),
         "v4l2".into(),
+        "-input_format".into(),
+        "mjpeg".into(),
         "-framerate".into(),
-        "10".into(),
+        "30".into(),
         "-video_size".into(),
         "640x480".into(),
         "-i".into(),
@@ -268,8 +197,37 @@ fn generate_ffmpeg_command(device: &str, output: &Path, timeout: u8) -> Vec<Stri
         "2M".into(),
         "-an".into(),
         "-y".into(),
-        "-t".into(),
-        timeout.to_string().into(),
         output.to_string_lossy().into_owned(),
     ]
+}
+
+pub fn list_cameras() -> Result<Vec<String>, io::Error> {
+    let mut cameras = Vec::new();
+
+    for i in 0..10 {
+        let device = format!("/dev/video{}", i);
+
+        if !Path::new(&device).exists() {
+            continue;
+        }
+
+        let output = Command::new("v4l2-ctl")
+            .args(["-d", &device, "--all"])
+            .output();
+
+        let output = match output {
+            Ok(output) if output.status.success() => output,
+            _ => continue,
+        };
+
+        let text = String::from_utf8_lossy(&output.stdout);
+
+        if text.contains("Driver name      : uvcvideo")
+            && text.contains("Capabilities     : timeperframe")
+        {
+            cameras.push(device);
+        }
+    }
+
+    Ok(cameras)
 }
