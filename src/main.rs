@@ -6,6 +6,9 @@
     return output path of the recording
 */
 
+// 30 seconds - failed.
+// 20 seconds - 
+
 mod cam;
 
 fn main() {
@@ -17,7 +20,7 @@ fn main() {
     // 0 = manual stop only; stop_recording() controls when recording ends.
     let _ = cam::start_recording(&found_cam, 0).expect("Failed to start recording");
 
-    std::thread::sleep(std::time::Duration::from_secs(29));
+    std::thread::sleep(std::time::Duration::from_secs(20));
     cam::stop_recording().expect("Failed to stop recording");
 
     let recordings = cam::list_recordings().expect("Failed to list recordings");
