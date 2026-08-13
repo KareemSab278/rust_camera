@@ -6,11 +6,7 @@
     return output path of the recording
 */
 
-// 30 seconds - failed.
-// 28 seconds - 
-// 25 seconds - pass.
-// 20 seconds - pass.
-
+// all pass up to 60 seconds on isolated tests - most effieicnt build yet: 9177ff49924539e9470977b8e5cf501f2234d9db
 
 mod cam;
 
